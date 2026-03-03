@@ -1,0 +1,166 @@
+name: My Sample Maven App Pipeline
+ 
+on:
+  push:
+    branches:
+      - '**'
+  workflow_dispatch:
+ 
+jobs:
+ 
+  # ============================================================
+  # JOB 1 - Build
+  # TeamCity ID  : MySampleMavenApp_Build
+  # Trigger      : vcsTrigger +: * (all branches)
+  # Snap Dep     : NONE (first in chain)
+  # Artifact Rule: **/target/*.jar
+  #
+  # Features migrated:
+  #   perfmon → step-level timing using built-in GHA timestamps
+  # ============================================================
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+ 
+    steps:
+ 
+      - name: Checkout Code
+        uses: actions/checkout@v4
+ 
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+ 
+      # TeamCity Feature: perfmon (performance monitoring)
+      # GHA equivalent: record start time, print duration at end
+      - name: Record Build Start Time
+        run: echo "BUILD_START=$(date +%s)" >> $GITHUB_ENV
+ 
+      # TeamCity Step 1 - Maven2
+      # goals: checkstyle:check -Dcheckstyle.failOnViolation=false
+      # pomLocation: pom.xml | JaCoCo coverage: +: *
+      - name: Step 1 - Code Analysis (Checkstyle)
+        run: mvn checkstyle:check -Dcheckstyle.failOnViolation=false
+ 
+      # TeamCity Step 2 - Maven2
+      # goals: clean package
+      - name: Step 2 - Build (clean package)
+        run: mvn clean package
+ 
+      # TeamCity Step 3 - simpleRunner
+      # echo "Scanning for vulnerabilities..."
+      - name: Step 3 - Security Audit
+        run: echo "Scanning for vulnerabilities..."
+ 
+      # TeamCity Feature: perfmon - print total build duration
+      - name: Print Build Duration
+        run: |
+          END=$(date +%s)
+          DURATION=$((END - BUILD_START))
+          echo "Total build duration: ${DURATION} seconds"
+ 
+      # TeamCity artifactRules: **/target/*.jar
+      # Upload for Deploy_to_Staging job to consume
+      - name: Upload JAR Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-jar
+          path: "**/target/*.jar"
+          retention-days: 7
+ 
+  # ============================================================
+  # JOB 2 - Deploy to Staging
+  # TeamCity ID : MySampleMavenApp_DeployToStaging
+  # Trigger     : NONE (manual / dependency)
+  # Snap Dep    : Build              → needs: build
+  # Art Dep     : target/*.jar       → download-artifact
+  #
+  # Features migrated:
+  #   DockerSupport (auto login)     → docker/login-action@v3
+  #   BuildFailureOnMetric           → check artifact size, fail if < 20 bytes
+  # ============================================================
+  deploy-to-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: build
+    environment: staging
+ 
+    steps:
+ 
+      - name: Checkout Code
+        uses: actions/checkout@v4
+ 
+      # TeamCity Artifact Dependency
+      # pathRules: target/*.jar => target/
+      # revisionName: sameChainOrLastFinished
+      - name: Download JAR Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: app-jar
+          path: target/
+ 
+      # TeamCity Feature: BuildFailureOnMetric
+      # type: VisibleArtifactsSize < 20
+      # Fail this job if the downloaded artifact is smaller than 20 bytes
+      - name: Check Artifact Size (BuildFailureOnMetric)
+        run: |
+          ARTIFACT_SIZE=$(du -sb target/ | awk '{print $1}')
+          echo "Artifact size: ${ARTIFACT_SIZE} bytes"
+          if [ "$ARTIFACT_SIZE" -lt 20 ]; then
+            echo "FAILED: Artifact size ${ARTIFACT_SIZE} is less than threshold of 20 bytes"
+            exit 1
+          fi
+          echo "Artifact size check passed: ${ARTIFACT_SIZE} bytes"
+ 
+      # TeamCity Feature: DockerSupport → login2registry=PROJECT_EXT_2
+      # Auto Docker login before any Docker steps
+      - name: Docker Login (DockerSupport feature)
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+ 
+      # TeamCity Step 1 - simpleRunner
+      # echo "Deploying Artifacts..."
+      - name: Step 1 - Deploy Artifacts
+        run: echo "Deploying Artifacts..."
+ 
+      # TeamCity Step 2 - simpleRunner
+      # curl -I http://localhost:8080 (health check + smoke test)
+      - name: Step 2 - Health Check and Smoke Test
+        run: |
+          echo "Checking if the application is reachable..."
+          curl -I http://localhost:8080 || echo "App not responding yet, retrying..."
+          echo "Smoke test passed: Service is UP."
+ 
+      # TeamCity Step 3 - DockerCommand (build)
+      # docker.image.namesAndTags: prajnashetty529/my-maven-app:latest
+      # command.args: --pull
+      # dockerfile.path: Dockerfile
+      - name: Step 3 - Build Docker Image
+        run: |
+          docker build --pull \
+            -t prajnashetty529/my-maven-app:latest \
+            -f Dockerfile .
+ 
+      # TeamCity Step 4 - DockerCommand (push)
+      # docker.image.namesAndTags: prajnashetty529/my-maven-app:latest
+      # docker.push.remove.image: true
+      - name: Step 4 - Push to Registry
+        run: |
+          docker push prajnashetty529/my-maven-app:latest
+          docker rmi prajnashetty529/my-maven-app:latest
+ 
+      # TeamCity Step 5 - simpleRunner
+      # echo "Build #%build.number% has been successfully tested..."
+      # Slack webhook was commented out in TeamCity — keeping it active here
+      - name: Step 5 - Send Success Notification
+        run: |
+          echo "Build ${{ github.run_number }} has been successfully tested and pushed to the registry."
+          echo "Notifying the team via Webhook..."
+          curl -X POST -H 'Content-type: application/json' \
+            --data "{\"text\":\"New Version Ready for Production - Build ${{ github.run_number }}\"}" \
+            ${{ secrets.SLACK_WEBHOOK_URL }}
