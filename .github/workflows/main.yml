@@ -115,12 +115,16 @@ jobs:
           ARTIFACT_SIZE=$(stat -c%s "$JAR_FILE")
           echo "JAR file     : $JAR_FILE"
           echo "Artifact size: ${ARTIFACT_SIZE} bytes"
-          if [ "$ARTIFACT_SIZE" -lt 20 ]; then
-            echo "FAILED: Artifact size ${ARTIFACT_SIZE} bytes is less than threshold of 20 bytes"
+          
+          # Changed -lt to -gt and updated the error message
+          if [ "$ARTIFACT_SIZE" -gt 20 ]; then
+            echo "FAILED: Artifact size ${ARTIFACT_SIZE} bytes is greater than threshold of 20 bytes"
             exit 1
           fi
+          
           echo "Artifact size check passed: ${ARTIFACT_SIZE} bytes"
- 
+
+          
       # TeamCity Feature: DockerSupport → login2registry=PROJECT_EXT_2
       # Auto Docker login before any Docker steps
       - name: Docker Login (DockerSupport feature)
